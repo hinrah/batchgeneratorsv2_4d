@@ -39,12 +39,13 @@ class SpatialTransform(BasicTransform):
         """
         magnitude must be given in pixels!
         deformation scale is given as a paercentage of the edge length
-        
-        padding_mode_image: see torch grid_sample documentation. This currently applies to image and regression target 
+
+        padding_mode_image: see torch grid_sample documentation. This currently applies to image and regression target
         because both call self._apply_to_image. Can be "zeros", "reflection", "border"
         """
         super().__init__()
         self.patch_size = patch_size
+        self.spatial_patch_size = patch_size[-3:]
         if not isinstance(patch_center_dist_from_border, (tuple, list)):
             patch_center_dist_from_border = [patch_center_dist_from_border] * len(patch_size)
         self.patch_center_dist_from_border = patch_center_dist_from_border
@@ -65,7 +66,7 @@ class SpatialTransform(BasicTransform):
         self.padding_mode_image = padding_mode_image
 
     def get_parameters(self, **data_dict) -> dict:
-        dim = data_dict['image'].ndim - 1
+        spacial_dim = min(data_dict['image'].ndim - 1, 3)
 
         do_rotation = np.random.uniform() < self.p_rotation
         do_scale = np.random.uniform() < self.p_scaling
@@ -74,23 +75,23 @@ class SpatialTransform(BasicTransform):
         if do_rotation:
             angles = [sample_scalar(self.rotation, image=data_dict['image'], dim=i) for i in range(0, 3)]
         else:
-            angles = [0] * dim
+            angles = [0] * spacial_dim
         if do_scale:
             if np.random.uniform() <= self.p_synchronize_scaling_across_axes:
-                scales = [sample_scalar(self.scaling, image=data_dict['image'], dim=None)] * dim
+                scales = [sample_scalar(self.scaling, image=data_dict['image'], dim=None)] * spacial_dim
             else:
                 scales = [sample_scalar(self.scaling, image=data_dict['image'], dim=i) for i in range(0, 3)]
         else:
-            scales = [1] * dim
+            scales = [1] * spacial_dim
 
         # affine matrix
         if do_scale or do_rotation:
-            if dim == 3:
+            if spacial_dim == 3:
                 affine = create_affine_matrix_3d(angles, scales)
-            elif dim == 2:
+            elif spacial_dim == 2:
                 affine = create_affine_matrix_2d(angles[-1], scales)
             else:
-                raise RuntimeError(f'Unsupported dimension: {dim}')
+                raise RuntimeError(f'Unsupported dimension: {spacial_dim}')
         else:
             affine = None  # this will allow us to detect that we can skip computations
 
@@ -99,26 +100,26 @@ class SpatialTransform(BasicTransform):
         if do_deform:
             if np.random.uniform() <= self.p_synchronize_def_scale_across_axes:
                 deformation_scales = [
-                    sample_scalar(self.elastic_deform_scale, image=data_dict['image'], dim=None, patch_size=self.patch_size)
-                    ] * dim
+                                         sample_scalar(self.elastic_deform_scale, image=data_dict['image'], dim=None, patch_size=self.spatial_patch_size)
+                                     ] * spacial_dim
             else:
                 deformation_scales = [
-                    sample_scalar(self.elastic_deform_scale, image=data_dict['image'], dim=i, patch_size=self.patch_size)
-                    for i in range(dim)
-                    ]
+                    sample_scalar(self.elastic_deform_scale, image=data_dict['image'], dim=i, patch_size=self.spatial_patch_size)
+                    for i in range(spacial_dim)
+                ]
 
             # sigmas must be in pixels, as this will be applied to the deformation field
-            sigmas = [i * j for i, j in zip(deformation_scales, self.patch_size)]
+            sigmas = [i * j for i, j in zip(deformation_scales, self.spatial_patch_size)]
 
             magnitude = [
                 sample_scalar(self.elastic_deform_magnitude, image=data_dict['image'], patch_size=self.patch_size,
-                              dim=i, deformation_scale=deformation_scales[i])
-                for i in range(dim)]
+                              spacial_dim=i, deformation_scale=deformation_scales[i])
+                for i in range(spacial_dim)]
             # doing it like this for better memory layout for blurring
-            offsets = torch.normal(mean=0, std=1, size=(dim, *self.patch_size))
+            offsets = torch.normal(mean=0, std=1, size=(spacial_dim, *self.spatial_patch_size))
 
             # all the additional time elastic deform takes is spent here
-            for d in range(dim):
+            for d in range(spacial_dim):
                 # fft torch, slower
                 # for i in range(offsets.ndim - 1):
                 #     offsets[d] = blur_dimension(offsets[d][None], sigmas[d], i, force_use_fft=True, truncate=6)[0]
@@ -135,7 +136,7 @@ class SpatialTransform(BasicTransform):
 
                 mx = torch.max(torch.abs(offsets[d]))
                 offsets[d] /= (mx / np.clip(magnitude[d], a_min=1e-8, a_max=np.inf))
-            spatial_dims = tuple(list(range(1, dim + 1)))
+            spatial_dims = tuple(list(range(1, spacial_dim + 1)))
             offsets = torch.permute(offsets, (*spatial_dims, 0))
         else:
             offsets = None
@@ -159,6 +160,7 @@ class SpatialTransform(BasicTransform):
         }
 
     def _apply_to_image(self, img: torch.Tensor, **params) -> torch.Tensor:
+        has_time_dim = img.ndim == 5
         if params['affine'] is None and params['elastic_offsets'] is None:
             # No spatial transformation is being done. Round grid_center and crop without having to interpolate.
             # This saves compute.
@@ -181,7 +183,7 @@ class SpatialTransform(BasicTransform):
                               pad_kwargs=pad_kwargs)
             return img
         else:
-            grid = _create_centered_identity_grid2(self.patch_size)
+            grid = _create_centered_identity_grid2(self.spatial_patch_size)
 
             # we deform first, then rotate
             if params['elastic_offsets'] is not None:
@@ -196,13 +198,21 @@ class SpatialTransform(BasicTransform):
             else:
                 mn = 0
 
-            new_center = torch.Tensor([c - s / 2 for c, s in zip(params['center_location_in_pixels'], img.shape[1:])])
+            new_center = torch.Tensor([c - s / 2 for c, s in zip(params['center_location_in_pixels'], img.shape[1:])])[-3:]
             grid += (new_center - mn)
             # print(f'grid sample with pad mode {self.padding_mode_image}')
-            return grid_sample(img[None], _convert_my_grid_to_grid_sample_grid(grid, img.shape[1:])[None],
-                               mode='bilinear', padding_mode=self.padding_mode_image, align_corners=False)[0]
+            if not has_time_dim:
+                img = img[None]
+
+            resampled = grid_sample(img, torch.stack([_convert_my_grid_to_grid_sample_grid(grid, img.shape[2:])]*img.shape[0], dim=0),
+                               mode='bilinear', padding_mode=self.padding_mode_image, align_corners=False)
+            if has_time_dim:
+                return resampled
+            else:
+                return resampled[0]
 
     def _apply_to_segmentation(self, segmentation: torch.Tensor, **params) -> torch.Tensor:
+        has_time_dim = segmentation.ndim == 5
         segmentation = segmentation.contiguous()
         if params['affine'] is None and params['elastic_offsets'] is None:
             # No spatial transformation is being done. Round grid_center and crop without having to interpolate.
@@ -215,7 +225,7 @@ class SpatialTransform(BasicTransform):
                                        pad_kwargs={'value': 0})
             return segmentation
         else:
-            grid = _create_centered_identity_grid2(self.patch_size)
+            grid = _create_centered_identity_grid2(self.spatial_patch_size)
 
             # we deform first, then rotate
             if params['elastic_offsets'] is not None:
@@ -229,19 +239,25 @@ class SpatialTransform(BasicTransform):
             else:
                 mn = 0
 
-            new_center = torch.Tensor([c - s / 2 for c, s in zip(params['center_location_in_pixels'], segmentation.shape[1:])])
+            new_center = torch.Tensor([c - s / 2 for c, s in zip(params['center_location_in_pixels'], segmentation.shape[1:])])[-3:]
 
             grid += (new_center - mn)
-            grid = _convert_my_grid_to_grid_sample_grid(grid, segmentation.shape[1:])
+            # print(f'grid sample with pad mode {self.padding_mode_image}')
+            if not has_time_dim:
+                segmentation = segmentation[None]
+
+            grid = torch.stack([_convert_my_grid_to_grid_sample_grid(grid, segmentation.shape[2:])]*segmentation.shape[0], dim=0)
 
             if self.mode_seg == 'nearest':
                 result_seg = grid_sample(
-                                segmentation[None].float(),
-                                grid[None],
-                                mode=self.mode_seg,
-                                padding_mode=self.border_mode_seg,
-                                align_corners=False
-                            )[0].to(segmentation.dtype)
+                    segmentation.float(),
+                    grid,
+                    mode=self.mode_seg,
+                    padding_mode=self.border_mode_seg,
+                    align_corners=False
+                ).to(segmentation.dtype)
+                if not has_time_dim:
+                    result_seg = result_seg[0]
             else:
                 result_seg = torch.zeros((segmentation.shape[0], *self.patch_size), dtype=segmentation.dtype)
                 if self.bg_style_seg_sampling:
@@ -250,34 +266,42 @@ class SpatialTransform(BasicTransform):
                         # if we only have 2 labels then we can save compute time
                         if len(labels) == 2:
                             out = grid_sample(
-                                    ((segmentation[c] == labels[1]).float())[None, None],
-                                    grid[None],
-                                    mode=self.mode_seg,
-                                    padding_mode=self.border_mode_seg,
-                                    align_corners=False
-                                )[0][0] >= 0.5
+                                ((segmentation[c] == labels[1]).float())[None],
+                                grid,
+                                mode=self.mode_seg,
+                                padding_mode=self.border_mode_seg,
+                                align_corners=False
+                            )[0] >= 0.5
+                            if not has_time_dim:
+                                out = out[0]
                             result_seg[c][out] = labels[1]
                             result_seg[c][~out] = labels[0]
                         else:
                             for i, u in enumerate(labels):
-                                result_seg[c][
-                                    grid_sample(
-                                        ((segmentation[c] == u).float())[None, None],
-                                        grid[None],
+                                out_idx = grid_sample(
+                                        ((segmentation[c] == u).float())[None],
+                                        grid,
                                         mode=self.mode_seg,
                                         padding_mode=self.border_mode_seg,
                                         align_corners=False
-                                    )[0][0] >= 0.5] = u
+                                    )[0] >= 0.5
+                                if not has_time_dim:
+                                    result_seg[c][out_idx[0]] = u
+                                result_seg[c][out_idx] = u
                 else:
                     for c in range(segmentation.shape[0]):
                         labels = torch.from_numpy(np.sort(pd.unique(segmentation[c].numpy().ravel())))
-                        #torch.where(torch.bincount(segmentation.ravel()) > 0)[0].to(segmentation.dtype)
+                        # torch.where(torch.bincount(segmentation.ravel()) > 0)[0].to(segmentation.dtype)
                         tmp = torch.zeros((len(labels), *self.patch_size), dtype=torch.float16)
                         scale_factor = 1000
                         done_mask = torch.zeros(*self.patch_size, dtype=torch.bool)
                         for i, u in enumerate(labels):
-                            tmp[i] = grid_sample(((segmentation[c] == u).float() * scale_factor)[None, None], grid[None],
-                                                 mode=self.mode_seg, padding_mode=self.border_mode_seg, align_corners=False)[0][0]
+                            out = grid_sample(((segmentation[c] == u).float() * scale_factor)[None], grid,
+                                                 mode=self.mode_seg, padding_mode=self.border_mode_seg, align_corners=False)[0]
+                            if not has_time_dim:
+                                tmp[i] = out[0]
+                            else:
+                                tmp[i] = out
                             mask = tmp[i] > (0.7 * scale_factor)
                             result_seg[c][mask] = u
                             done_mask = done_mask | mask
@@ -295,6 +319,8 @@ class SpatialTransform(BasicTransform):
 
     def _apply_to_bbox(self, bbox, **params):
         raise NotImplementedError
+
+
 
 
 def create_affine_matrix_3d(rotation_angles, scaling_factors):

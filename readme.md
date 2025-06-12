@@ -1,3 +1,18 @@
+# 4D batchgeneratiors
+
+ **This is a fork of [batchgenerators](https://github.com/MIC-DKFZ/batchgeneratorsv2)**, originally
+ developed by the Division of Medical Image Computing, German Cancer Research
+ Center (DKFZ), and licensed under the Apache License 2.0.
+
+ This fork extends nnU-Net with 4D convolution support. See
+ [CHANGES.md](CHANGES.md) for a list of modifications.
+
+ This project is **not affiliated with, endorsed by, or maintained by** the
+ original nnU-Net authors or the DKFZ. Please direct issues with this fork here,
+ not to the upstream repository.
+
+ Large parts of this README are derived from the original nnU-Net documentation.
+
 # batchgeneratorsv2
 This repository is work in progress. If builds upon the [batchgenerators](https://github.com/MIC-DKFZ/batchgenerators) 
 framework but makes several key changes to the transforms:
@@ -11,17 +26,16 @@ Caveats:
 - performance is optimized for CPU. GPU-based data augmentation is not supported (implementation may use numpy etc) and will not be supported
 - currently this repository only covers a small subset of the transforms available in batchgenerators. Feel free to contribute more
 
-### How to contribute
-We are happy to accept PRs that further optimize performance and extend the available transformations!
-
-- Please provide benchmarking results relative to the old batchgenerators implementation (if applicable)
-- Please stick to the current transform template!
 
 # Acknowledgements
-<img src="assets/HI_Logo.png" height="100px" />
 
-<img src="assets/dkfz_logo.png" height="100px" />
+ **This is a fork of [batchgenerators](https://github.com/MIC-DKFZ/batchgeneratorsv2)**, originally
+ developed by the Division of Medical Image Computing, German Cancer Research
+ Center (DKFZ), and licensed under the Apache License 2.0.
 
-batchgeneratorsv2 developed and maintained by the Applied Computer Vision Lab (ACVL) of [Helmholtz Imaging](http://helmholtz-imaging.de) 
-and the [Division of Medical Image Computing](https://www.dkfz.de/en/mic/index.php) at the 
-[German Cancer Research Center (DKFZ)](https://www.dkfz.de/en/index.html).
+ This fork extends nnU-Net with 4D convolution support. See
+ [CHANGES.md](CHANGES.md) for a list of modifications.
+
+ This project is **not affiliated with, endorsed by, or maintained by** the
+ original nnU-Net authors or the DKFZ. Please direct issues with this fork here,
+ not to the upstream repository.
